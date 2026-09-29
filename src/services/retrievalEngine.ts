@@ -20,23 +20,47 @@ export interface RetrievedSource {
   snippet: string;
 }
 
+export type IntentType =
+  | 'definition'
+  | 'purpose_reason'
+  | 'compulsory_certification_products'
+  | 'certification_procedure'
+  | 'certification_requirements'
+  | 'certification_documents'
+  | 'certification_fee'
+  | 'certification_validity'
+  | 'standard_lookup'
+  | 'standard_comparison'
+  | 'standard_requirement'
+  | 'standard_scope'
+  | 'product_standard_identification'
+  | 'hallmarking'
+  | 'hallmark_verification'
+  | 'fake_isi_or_mark_complaint'
+  | 'isi_mark_verification'
+  | 'consumer_complaint'
+  | 'laboratory_testing'
+  | 'laboratory_discovery'
+  | 'bis_scheme'
+  | 'bis_scheme_eligibility'
+  | 'bis_scheme_procedure'
+  | 'testing_requirement'
+  | 'product_compliance'
+  | 'license_information'
+  | 'renewal'
+  | 'cancellation_or_suspension'
+  | 'general_bis_information'
+  | 'unsupported_or_non_bis'
+  | 'authenticity_verification'
+  | 'bis_vs_isi_comparison'
+  | 'fees_concessions'
+  | 'hallmarking_gold'
+  | 'testing_laboratory'
+  | 'foreign_manufacturer'
+  | 'requirements_checklist';
+
 export interface QueryIntent {
-  intentType:
-    | 'standard_lookup'
-    | 'standard_comparison'
-    | 'consumer_complaint'
-    | 'authenticity_verification'
-    | 'certification_procedure'
-    | 'requirements_checklist'
-    | 'fees_concessions'
-    | 'foreign_manufacturer'
-    | 'validity_renewal'
-    | 'cancellation_penalties'
-    | 'testing_laboratory'
-    | 'hallmarking_gold'
-    | 'bis_vs_isi_comparison'
-    | 'definition_overview'
-    | 'general_inquiry';
+  intentType: IntentType;
   isNumbers: string[];
   targetProducts: string[];
   targetSchemes: string[];
@@ -57,6 +81,15 @@ export interface RetrievalResult {
   contextText: string;
   retrievalMode?: 'hybrid' | 'lexical';
   queryIntent?: QueryIntent;
+  debugInfo?: {
+    detectedIntent: string;
+    normalizedQuery: string;
+    isNumbers: string[];
+    targetProducts: string[];
+    topDocIds: string[];
+    candidateRelevanceScores: Record<string, number>;
+    rejectionReason?: string;
+  };
 }
 
 // Synonyms & Intent map for natural language domain expansion
@@ -294,6 +327,22 @@ export function extractQueryIntent(userQuery: string): QueryIntent {
   const text = (userQuery || '').toLowerCase().trim();
   const isNumbers = extractISNumbers(text);
 
+  // Non-BIS domain check: Passport, Visa, Income Tax, Flight, Train, Cooking, Weather, etc.
+  const nonBisKeywords = /passport|visa|income\s+tax|gst\s+return|flight\s+ticket|train\s+status|pnr|cooking|recipe|weather|cricket|movie|president\s+of|stock\s+market|crypto|tax\s+rate|sports|football/i;
+  const bisDomainKeywords = /bis|isi\s*mark|isi|standard|standards|is\s*\d+|huid|hallmark|hallmarking|crs|cml|manakonline|crsbis|qco|bureau\s+of\s+indian\s+standards/i;
+
+  if (nonBisKeywords.test(text) && !bisDomainKeywords.test(text)) {
+    return {
+      intentType: 'unsupported_or_non_bis',
+      isNumbers: [],
+      targetProducts: [],
+      targetSchemes: [],
+      isMultiPart: false,
+      subQuestions: [userQuery],
+      description: 'Query belongs to a non-BIS domain (Unsupported).'
+    };
+  }
+
   const targetProducts: string[] = [];
   if (/water|drinking|potable|bottled|packaged\s+water/i.test(text)) targetProducts.push('drinking water');
   if (/toy|toys|phthalate|children/i.test(text)) targetProducts.push('toys');
@@ -312,40 +361,68 @@ export function extractQueryIntent(userQuery: string): QueryIntent {
   if (/hallmark|huid/i.test(text)) targetSchemes.push('Gold Hallmarking');
   if (/lrs|lab|testing/i.test(text)) targetSchemes.push('Laboratory Recognition Scheme (LRS)');
 
-  let intentType: QueryIntent['intentType'] = 'general_inquiry';
+  let intentType: IntentType = 'general_bis_information';
 
-  if (/complaint|grievance|report\s+fake|fake\s+isi|counterfeit|helpline|1800|consumer@bis|பராதி|புகார்|शिकायत|ఫిర్యాదు|ದೂರು/i.test(text)) {
+  if (/(?:for\s+which|which|what|list\s+of|mandatory|compulsory)\s+(?:products|items|goods|categories|materials|articles)\s+(?:is|are|need|require|cover|under|compulsory|mandatory|necessary|specified|notified)/i.test(text) ||
+      /(?:products|items|goods)\s+(?:that\s+need|requiring|under)\s+(?:bis|isi|mandatory|compulsory)/i.test(text) ||
+      /for\s+which\s+products\s+is\s+bis/i.test(text) ||
+      /which\s+products\s+need\s+bis/i.test(text)) {
+    intentType = 'compulsory_certification_products';
+  } else if (/(?:is|does)\s+.*(?:mandatory|compulsory|require|need)\s+.*(?:bis|isi|certification|mark)/i.test(text) && targetProducts.length > 0) {
+    intentType = 'product_compliance';
+  } else if (/why\s+(?:is|do|does|should)\b|purpose\s+of|reason\s+for|benefits\s+of|importance\s+of|necessity\s+of/i.test(text)) {
+    intentType = 'purpose_reason';
+  } else if (/fake\s+isi|counterfeit\s+isi|report\s+fake|misuse\s+of\s+isi|போலி|नकली|నకిలీ|ന വ്യാജ|ನಕಲಿ/i.test(text) ||
+             (/complain|grievance|report/i.test(text) && /isi|mark|logo|cml|huid/i.test(text))) {
+    intentType = 'fake_isi_or_mark_complaint';
+  } else if (/complaint|grievance|report\s+defect|helpline|1800|consumer@bis|பராதி|புகார்|शिकायत|ఫిర్యాదు|ದೂರು/i.test(text)) {
     intentType = 'consumer_complaint';
-  } else if (/verify|verification|check\s+cml|check\s+isi|check\s+huid|check\s+licence|authentic|genuine|real\s+or\s+fake|சரிபார்க்க|जांच|తనిఖీ|പരിശോധിക്കുക/i.test(text)) {
-    intentType = 'authenticity_verification';
-  } else if (/foreign|overseas|outside\s+india|importer|विदेश/i.test(text)) {
-    intentType = 'foreign_manufacturer';
-  } else if (/validity|duration|renew|renewal|expire|expiration|புதுப்பிக்க|वैधता|नवीनीकरण/i.test(text)) {
-    intentType = 'validity_renewal';
+  } else if (/verify|verification|check\s+cml|check\s+isi|genuine\s+isi|check\s+licence|authentic\s+isi|சரிபார்க்க|जांच|తనిఖీ|പരിശോധിക്കുക/i.test(text) && /isi|cml|licence|mark/i.test(text)) {
+    intentType = 'isi_mark_verification';
+  } else if (/verify\s+huid|huid\s+check|check\s+huid|verify\s+hallmark|gold\s+purity\s+check/i.test(text)) {
+    intentType = 'hallmark_verification';
+  } else if (/hallmark|hallmarking|huid|jewel|gold\s+purity|22k916/i.test(text)) {
+    intentType = 'hallmarking';
+  } else if (/foreign|overseas|outside\s+india|importer|air|representative|विदेश/i.test(text)) {
+    intentType = 'bis_scheme';
+  } else if (/renew|renewal|expiry|expire|expiration|extension/i.test(text)) {
+    intentType = 'renewal';
+  } else if (/validity|valid\s+for|duration|how\s+long\s+valid|period/i.test(text)) {
+    intentType = 'certification_validity';
   } else if (/cancel|cancellation|suspend|suspension|penalty|fine|punish|section\s+29|imprisonment|தண்டனை|सजा|जुर्माना/i.test(text)) {
-    intentType = 'cancellation_penalties';
-  } else if (/fee|fees|cost|price|discount|concession|msme|startup|50%|udyam|கட்டணம்|शुल्क|రుసుము|ഫീസ്|ಶುಲ್ಕ/i.test(text)) {
-    intentType = 'fees_concessions';
-  } else if (/document|documents|checklist|machinery|equipment|ஆவணங்கள்|दस्तावेज़|ದಾಖಲೆಗಳು|పత్రాలు|രേഖകൾ/i.test(text)) {
-    intentType = 'requirements_checklist';
-  } else if (/differen|versus|\bvs\b|compare|comparison|வித்தியாசம்|अंतर|తేడా|భேదం|ವ್ಯತ್ಯಾಸ/i.test(text)) {
+    intentType = 'cancellation_or_suspension';
+  } else if (/documents?|checklist|paperwork|proofs|machinery\s+list|equipment\s+list|ஆவணங்கள்|दस्तावेज़|ದಾಖಲೆಗಳು|పత్రాలు|രേഖകൾ/i.test(text)) {
+    intentType = 'certification_documents';
+  } else if (/fee|fees|cost|charge|charges|price|discount|concession|msme|startup|50%|udyam|கட்டணம்|शुल्क|రుసుము|ഫീസ്|ಶುಲ್ಕ/i.test(text)) {
+    intentType = 'certification_fee';
+  } else if (/differen|versus|\bvs\b|compare|comparison|வித்தியாசம்|अंतर|తేడా|భేదం|ವ್ಯತ್ಯಾಸ/i.test(text)) {
     if (isNumbers.length > 0) {
       intentType = 'standard_comparison';
     } else if (/bis.*and.*isi|isi.*and.*bis|bis\s*vs\s*isi|difference\s*between\s*bis\s*and\s*isi/i.test(text)) {
-      intentType = 'bis_vs_isi_comparison';
+      intentType = 'definition';
     } else {
       intentType = 'standard_comparison';
     }
-  } else if (/lab|laboratory|labs|testing|test\s+report|lrs|ஆய்வகம்|प्रयोगशाला|ల్యాబ్|ലാബ്/i.test(text)) {
-    intentType = 'testing_laboratory';
-  } else if (/hallmark|hallmarking|huid|jewel|gold|22k916/i.test(text)) {
-    intentType = 'hallmarking_gold';
-  } else if (/how|obtain|get|apply|approval|procedure|process|steps|எப்படி|ஒப்புதல்|कैसे|प्रक्रिया|ఎలా/i.test(text)) {
-    intentType = 'certification_procedure';
   } else if (isNumbers.length > 0) {
-    intentType = 'standard_lookup';
-  } else if (/what\s+is\s+bis|what\s+does\s+bis|about\s+bis|meaning\s+of\s+bis|full\s+form\s+of\s+bis|what\s+is\s+isi|what\s+is\s+crs/i.test(text)) {
-    intentType = 'definition_overview';
+    if (/requirement|parameter|limit|threshold|test/i.test(text)) {
+      intentType = 'standard_requirement';
+    } else if (/scope|clause|coverage|apply|applies/i.test(text)) {
+      intentType = 'standard_scope';
+    } else {
+      intentType = 'standard_lookup';
+    }
+  } else if (/which\s+(?:indian\s+standard|is\s+code|standard|specification)\s+applies|standard\s+for\s+/i.test(text)) {
+    intentType = 'product_standard_identification';
+  } else if (/find.*lab|search.*lab|laboratory\s+directory|where\s+are.*labs|lab\s+near/i.test(text)) {
+    intentType = 'laboratory_discovery';
+  } else if (/lab|laboratory|labs|testing|test\s+report|lrs|ஆய்வகம்|प्रयोगशाला|ల్యాబ్|ലാബ്/i.test(text)) {
+    intentType = 'laboratory_testing';
+  } else if (/how\s+(?:can|do|to)\s+(?:apply|get|obtain|receive|register)|procedure|process\s+steps|workflow|எப்படி|ஒப்புதல்|कैसे|प्रक्रिया|ఎలా/i.test(text)) {
+    intentType = 'certification_procedure';
+  } else if (/what\s+is\s+bis\s+certif|what\s+is\s+isi\s+mark|what\s+is\s+crs|meaning\s+of|definition\s+of/i.test(text)) {
+    intentType = 'definition';
+  } else if (/what\s+is\s+bis|about\s+bis|bureau\s+of\s+indian\s+standards|bis\s+overview/i.test(text)) {
+    intentType = 'general_bis_information';
   }
 
   const parts = text.split(/,|\band\b|\balso\b|\bplus\b|\?|;|\u0964|\n/i).map(s => s.trim()).filter(s => s.length > 5);
@@ -372,6 +449,10 @@ export function evaluateEvidenceRelevance(
 ): { isRelevant: boolean; reason: string } {
   const { intentType, isNumbers, targetProducts } = queryIntent;
 
+  if (intentType === 'unsupported_or_non_bis') {
+    return { isRelevant: false, reason: 'Query intent unsupported_or_non_bis is outside authorized BIS knowledge domain.' };
+  }
+
   if (isNumbers.length > 0) {
     const matchedIsDigits = matchedStandards.map(s => s.isNumber.replace(/\D/g, ''));
     const matchesAnyRequested = isNumbers.some(num => matchedIsDigits.some(d => d.includes(num)));
@@ -381,23 +462,47 @@ export function evaluateEvidenceRelevance(
     return { isRelevant: true, reason: 'Matched requested IS numbers' };
   }
 
-  if (intentType === 'consumer_complaint') {
-    const hasComplaintEvidence = matchedFaqs.some(f => f.id === 'faq-10' || /complaint|grievance|report/i.test(f.question + ' ' + f.shortAnswer)) || matchedSchemes.some(s => /complaint/i.test(s.overview));
+  if (intentType === 'compulsory_certification_products' || intentType === 'product_compliance') {
+    const hasQcoOrProductEvidence = matchedFaqs.some(f => f.id === 'faq-1' || f.id === 'faq-6') || matchedStandards.length > 0 || matchedSchemes.length > 0;
+    if (!hasQcoOrProductEvidence) {
+      return { isRelevant: false, reason: 'No mandatory product QCO evidence found' };
+    }
+    return { isRelevant: true, reason: 'Matched compulsory certification products evidence' };
+  }
+
+  if (intentType === 'purpose_reason') {
+    const hasPurposeEvidence = matchedFaqs.some(f => f.id === 'faq-1' || f.id === 'faq-12');
+    if (!hasPurposeEvidence) {
+      return { isRelevant: false, reason: 'No purpose or reason evidence found' };
+    }
+    return { isRelevant: true, reason: 'Matched purpose and reason evidence' };
+  }
+
+  if (intentType === 'definition' || intentType === 'general_bis_information') {
+    const hasDefEvidence = matchedFaqs.some(f => f.id === 'faq-1' || f.id === 'faq-12' || f.id === 'faq-2' || f.id === 'faq-3');
+    if (!hasDefEvidence) {
+      return { isRelevant: false, reason: 'No definition evidence found' };
+    }
+    return { isRelevant: true, reason: 'Matched definition evidence' };
+  }
+
+  if (intentType === 'fake_isi_or_mark_complaint' || intentType === 'consumer_complaint') {
+    const hasComplaintEvidence = matchedFaqs.some(f => f.id === 'faq-10' || f.id === 'faq-16' || /complaint|grievance|report/i.test(f.question + ' ' + f.shortAnswer)) || matchedSchemes.some(s => /complaint/i.test(s.overview));
     if (!hasComplaintEvidence) {
       return { isRelevant: false, reason: 'No complaint or grievance evidence found for consumer_complaint query' };
     }
     return { isRelevant: true, reason: 'Matched consumer complaint evidence' };
   }
 
-  if (intentType === 'authenticity_verification') {
-    const hasVerificationEvidence = matchedFaqs.some(f => f.id === 'faq-7' || /verify|cml|licence/i.test(f.question + ' ' + f.shortAnswer));
+  if (intentType === 'isi_mark_verification' || intentType === 'hallmark_verification') {
+    const hasVerificationEvidence = matchedFaqs.some(f => f.id === 'faq-7' || f.id === 'faq-4' || /verify|cml|licence|huid/i.test(f.question + ' ' + f.shortAnswer));
     if (!hasVerificationEvidence) {
-      return { isRelevant: false, reason: 'No verification evidence found for authenticity_verification query' };
+      return { isRelevant: false, reason: 'No verification evidence found for verification query' };
     }
     return { isRelevant: true, reason: 'Matched authenticity verification evidence' };
   }
 
-  if (intentType === 'fees_concessions') {
+  if (intentType === 'certification_fee') {
     const hasFeeEvidence = matchedFaqs.some(f => f.id === 'faq-5' || /fee|msme|concession|discount/i.test(f.question + ' ' + f.shortAnswer)) || matchedSchemes.some(s => /fee|msme/i.test(s.feeOverview + ' ' + s.msmeConcession));
     if (!hasFeeEvidence) {
       return { isRelevant: false, reason: 'No fee or concession evidence found' };
@@ -413,7 +518,7 @@ export function evaluateEvidenceRelevance(
     return { isRelevant: true, reason: 'Matched certification procedure evidence' };
   }
 
-  if (intentType === 'requirements_checklist') {
+  if (intentType === 'certification_documents') {
     const hasReqEvidence = matchedFaqs.some(f => f.id === 'faq-8' || /document|checklist|machinery/i.test(f.question + ' ' + f.shortAnswer)) || matchedSchemes.some(s => s.keyDocumentsRequired.length > 0);
     if (!hasReqEvidence) {
       return { isRelevant: false, reason: 'No document/checklist requirements evidence found' };
@@ -421,15 +526,7 @@ export function evaluateEvidenceRelevance(
     return { isRelevant: true, reason: 'Matched requirements checklist evidence' };
   }
 
-  if (intentType === 'foreign_manufacturer') {
-    const hasFmcsEvidence = matchedSchemes.some(s => s.code === 'FMCS') || matchedFaqs.some(f => /foreign|fmcs/i.test(f.question + ' ' + f.shortAnswer));
-    if (!hasFmcsEvidence) {
-      return { isRelevant: false, reason: 'No FMCS evidence found' };
-    }
-    return { isRelevant: true, reason: 'Matched foreign manufacturer evidence' };
-  }
-
-  if (intentType === 'hallmarking_gold') {
+  if (intentType === 'hallmarking') {
     const hasHallmarkEvidence = matchedFaqs.some(f => f.id === 'faq-4' || /hallmark|huid|gold/i.test(f.question + ' ' + f.shortAnswer)) || matchedSchemes.some(s => s.code === 'Hallmarking');
     if (!hasHallmarkEvidence) {
       return { isRelevant: false, reason: 'No hallmarking evidence found' };
@@ -437,20 +534,12 @@ export function evaluateEvidenceRelevance(
     return { isRelevant: true, reason: 'Matched gold hallmarking evidence' };
   }
 
-  if (intentType === 'testing_laboratory') {
+  if (intentType === 'laboratory_discovery' || intentType === 'laboratory_testing') {
     const hasLabEvidence = matchedFaqs.some(f => f.id === 'faq-9' || /lab|laboratory|testing/i.test(f.question + ' ' + f.shortAnswer)) || matchedLabs.length > 0;
     if (!hasLabEvidence) {
       return { isRelevant: false, reason: 'No testing laboratory evidence found' };
     }
     return { isRelevant: true, reason: 'Matched testing laboratory evidence' };
-  }
-
-  if (intentType === 'bis_vs_isi_comparison') {
-    const hasBisVsIsiEvidence = matchedFaqs.some(f => f.id === 'faq-11' || /bis.*and.*isi|difference/i.test(f.question));
-    if (!hasBisVsIsiEvidence) {
-      return { isRelevant: false, reason: 'No BIS vs ISI comparison evidence found' };
-    }
-    return { isRelevant: true, reason: 'Matched BIS vs ISI comparison evidence' };
   }
 
   if (targetProducts.length > 0) {
